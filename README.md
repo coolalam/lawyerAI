@@ -1,4 +1,4 @@
-# 律序 · 律所智能办公平台
+# 易律网 · 律所智能办公平台
 
 Vue 3 + TypeScript 前端，Python FastAPI 后端，SQLite 数据库。以案件为中心，采用 Overview 总览 + 明细 Tab，包含律师工作台和角色化管理后台。
 

@@ -65,7 +65,7 @@ def seed_demo(conn, actor):
                 'priority':'重要','assignee_id':lawyers[lead]['id'],'status':'open','demo':True},actor['id'],case_id=case['id'])
         if i==0:
             blob=uid(); upload_dir=DATA/'uploads';upload_dir.mkdir(exist_ok=True)
-            content='律序平台演示文件\n此文件仅用于演示合同上传、用印及归档流程，不是真实合同。\n'.encode()
+            content='易律网平台演示文件\n此文件仅用于演示合同上传、用印及归档流程，不是真实合同。\n'.encode()
             (upload_dir/blob).write_bytes(content)
             import hashlib
             document=save_record(conn,'documents',{'title':'委托合同（演示说明）','category':'委托合同','status':'active','demo':True,

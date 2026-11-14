@@ -30,7 +30,7 @@ async def lifespan(app):
         yield
 
 
-app = FastAPI(title='律序 · 律所智能办公平台', version='1.0.0', lifespan=lifespan)
+app = FastAPI(title='易律网 · 律所智能办公平台', version='1.0.0', lifespan=lifespan)
 
 
 def _origin(scheme: str, host: str) -> str:

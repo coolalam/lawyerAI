@@ -129,7 +129,11 @@ def init_db():
         ''')
         if 'branch_code' not in {r['name'] for r in conn.execute('PRAGMA table_info(managed_departments)')}:
             conn.execute('ALTER TABLE managed_departments ADD COLUMN branch_code TEXT')
-        conn.execute("INSERT OR IGNORE INTO settings VALUES ('firm',?)", (encode({'name': '律序律师事务所', 'subtitle': '专业有序 · 协作有方'}),))
+        conn.execute("INSERT OR IGNORE INTO settings VALUES ('firm',?)", (encode({'name': '易律网', 'subtitle': '专业有序 · 协作有方'}),))
+        # Migrate the previous built-in brand while preserving any name set by
+        # an administrator in the settings page.
+        conn.execute("UPDATE settings SET value=? WHERE key='firm' AND json_extract(value,'$.name')='律序律师事务所'",
+                     (encode({'name': '易律网', 'subtitle': '专业有序 · 协作有方'}),))
         ensure_managed_references(conn)
         from .case_search import init_case_search
         init_case_search(conn)
