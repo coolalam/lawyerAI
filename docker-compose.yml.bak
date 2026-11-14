@@ -1,0 +1,20 @@
+services:
+  law-office:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lawyer-ai-office:latest
+    container_name: lawyer-ai-office
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8000:8000"
+    environment:
+      LAW_DATA_DIR: /app/data
+      LAW_DB_PATH: /app/data/jw-db-records-20261113.sqlite3
+      LAW_PORT: "8000"
+      # HTTPS 反向代理部署时按实际域名填写；多个来源使用逗号分隔。
+      LAW_ALLOWED_ORIGINS: ${LAW_ALLOWED_ORIGINS:-}
+    volumes:
+      # 使用当前迁移库及同目录附件/上传位置，不把 7GB 数据库打进镜像。
+      - ./data:/app/data

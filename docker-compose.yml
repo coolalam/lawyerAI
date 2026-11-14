@@ -1,20 +1,40 @@
 services:
-  law-office:
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
-    image: lawyer-ai-office:latest
-    container_name: lawyer-ai-office
+      target: backend
+    image: lawyer-ai-backend:latest
+    container_name: lawyer-ai-backend
     restart: unless-stopped
     init: true
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
       LAW_DATA_DIR: /app/data
       LAW_DB_PATH: /app/data/jw-db-records-20261113.sqlite3
       LAW_PORT: "8000"
-      # HTTPS 反向代理部署时按实际域名填写；多个来源使用逗号分隔。
       LAW_ALLOWED_ORIGINS: ${LAW_ALLOWED_ORIGINS:-}
     volumes:
-      # 使用当前迁移库及同目录附件/上传位置，不把 7GB 数据库打进镜像。
       - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10m
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: nginx-frontend
+    image: lawyer-ai-frontend:latest
+    container_name: lawyer-ai-frontend
+    restart: unless-stopped
+    init: true
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
