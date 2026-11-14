@@ -1,0 +1,9 @@
+{
+  "_instructions": "仅填写已与旧系统确认的状态，不猜测。发票键为 iv_status|iv_app_status；到账键为 pay_status；利冲键为 csm_status。seal_case_links 值为 [原分所ID, 原案号]。",
+  "statuses": {
+    "t_invoice": {},
+    "t_payment": {},
+    "t_conflict_search_mstr": {}
+  },
+  "seal_case_links": {}
+}
