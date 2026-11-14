@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-const props = defineProps<{ fields: any[]; model: Record<string, any>; lawyers: any[]; references?: Record<string, any[]> }>()
+import PersonPicker from './PersonPicker.vue'
+const props = defineProps<{ fields: any[]; model: Record<string, any>; lawyers: any[]; branches?: any[]; departments?: any[]; references?: Record<string, any[]> }>()
 const visible = computed(() => props.fields || [])
 function choices(field: any): { value: string; label: string }[] {
   if (field.type === 'lawyer') return props.lawyers.map(x => ({ value: x.id, label: `${x.name} · ${x.department || x.title || '律师'}` }))
@@ -14,7 +15,8 @@ function choices(field: any): { value: string; label: string }[] {
     <label v-for="field in visible" :key="field.key" class="form-field" :class="{ wide: field.type === 'textarea', checkbox: field.type === 'boolean' }">
       <span>{{ field.label }}<b v-if="field.required"> *</b></span>
       <textarea v-if="field.type === 'textarea'" v-model="model[field.key]" :required="field.required" :placeholder="`请输入${field.label}`" rows="3"></textarea>
-      <select v-else-if="['select', 'lawyer', 'document', 'invoice', 'plan'].includes(field.type)" v-model="model[field.key]" :required="field.required">
+      <PersonPicker v-else-if="field.type === 'lawyer'" v-model="model[field.key]" :people="lawyers" :branches="branches" :departments="departments" :label="field.label" :required="field.required" active-only :show-label="false" />
+      <select v-else-if="['select', 'document', 'invoice', 'plan'].includes(field.type)" v-model="model[field.key]" :required="field.required">
         <option value="">请选择{{ field.label }}</option>
         <option v-if="model[field.key] && !choices(field).some(x => x.value === model[field.key])" :value="model[field.key]">{{ model[field.key] }}（历史值）</option>
         <option v-for="option in choices(field)" :key="option.value" :value="option.value">{{ option.label }}</option>

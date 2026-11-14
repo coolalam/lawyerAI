@@ -33,14 +33,58 @@ async def lifespan(app):
 app = FastAPI(title='律序 · 律所智能办公平台', version='1.0.0', lifespan=lifespan)
 
 
+def _origin(scheme: str, host: str) -> str:
+    """Build a normalized origin from the values supplied by the ASGI server."""
+    return f'{scheme.strip().lower()}://{host.strip()}'.rstrip('/')
+
+
+def _referer_origin(value: str) -> str | None:
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme in ('http', 'https') and parsed.netloc:
+        return _origin(parsed.scheme, parsed.netloc)
+    return None
+
+
+def request_origins(request: Request) -> set[str]:
+    """Return origins that identify this request's public URL.
+
+    A container commonly sits behind an HTTPS reverse proxy. In that setup
+    ``request.base_url`` can still point at the internal ``http://...:8000``
+    address while the browser sends the public origin. Honour the standard
+    forwarding headers so same-origin writes (including API key creation) are
+    not rejected by the CSRF check.
+    """
+    origins = {str(request.base_url).rstrip('/')}
+    host = request.headers.get('x-forwarded-host') or request.headers.get('host')
+    if host:
+        # Proxies may append their own value; the first value is the original
+        # host. Strip whitespace but preserve an explicit port.
+        host = host.split(',', 1)[0].strip()
+        forwarded_proto = request.headers.get('x-forwarded-proto', '')
+        scheme = (forwarded_proto.split(',', 1)[0].strip() if forwarded_proto else request.url.scheme)
+        origins.add(_origin(scheme, host))
+    return origins
+
+
 @app.middleware('http')
 async def request_security(request, call_next):
     if request.method in ('POST', 'PATCH', 'PUT', 'DELETE'):
         origin = request.headers.get('origin')
         if origin:
-            allowed = {str(request.base_url).rstrip('/'), 'http://127.0.0.1:5173', 'http://localhost:5173'}
-            allowed.update(filter(None, os.environ.get('LAW_ALLOWED_ORIGINS', '').split(',')))
-            if origin not in allowed:
+            allowed = request_origins(request)
+            allowed.update(value.strip().rstrip('/') for value in os.environ.get('LAW_ALLOWED_ORIGINS', '').split(',') if value.strip())
+            allowed.update(('http://127.0.0.1:5173', 'http://localhost:5173'))
+            # When a proxy rewrites Host and drops forwarding headers, modern
+            # browsers still identify a same-origin request in Fetch Metadata.
+            # Referer is an additional browser-controlled fallback for clients
+            # that do not send Sec-Fetch-Site. Neither signal is accepted for
+            # cross-origin requests, so the explicit origin allowlist remains
+            # the normal path.
+            same_origin = request.headers.get('sec-fetch-site', '').lower() == 'same-origin'
+            same_origin = same_origin or _referer_origin(request.headers.get('referer', '')) == origin
+            if origin not in allowed and not same_origin:
                 return JSONResponse({'detail': '请求来源不受信任'}, status_code=403)
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'

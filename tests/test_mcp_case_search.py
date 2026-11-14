@@ -40,6 +40,25 @@ def test_mcp_streamable_http_requires_token_and_exposes_query_tool(client):
     assert client.post('/mcp',headers=headers,json={'jsonrpc':'2.0','id':3,'method':'tools/list','params':{}}).status_code==401
 
 
+def test_token_creation_accepts_public_origin_forwarded_by_reverse_proxy(client):
+    headers = {
+        'Origin': 'https://law.example.com',
+        'X-Forwarded-Proto': 'https',
+        'X-Forwarded-Host': 'law.example.com',
+    }
+    response = client.post('/api/mcp/tokens', headers=headers, json={'name': '反向代理客户端'})
+    assert response.status_code == 201, response.text
+
+
+def test_token_creation_accepts_browser_same_origin_when_proxy_rewrites_host(client):
+    headers = {
+        'Origin': 'http://www.guogaoyi.cn',
+        'Sec-Fetch-Site': 'same-origin',
+    }
+    response = client.post('/api/mcp/tokens', headers=headers, json={'name': '同源浏览器客户端'})
+    assert response.status_code == 201, response.text
+
+
 def test_case_query_and_bundle_relations(client):
     person=lawyer(client,'MCP主办律师')
     item=case(client,person,number='CS-MCP-001',client_name='MCP客户')

@@ -37,7 +37,13 @@ docker compose logs -f law-office
 
 访问 `http://localhost:8000`。`docker-compose.yml` 默认将 `./data` 挂载到容器 `/app/data`，并将 `LAW_DB_PATH` 指向 `/app/data/jw-db-records-20261113.sqlite3`，因此启动后直接使用当前迁移库；同目录的上传文件和附件位置也会保留。停止服务使用 `docker compose down`，不会删除数据库卷中的文件。部署前请先备份 `data/`，并确保 Docker 进程对该目录有读写权限。
 
-如果数据库位于其他目录，修改 Compose 的卷映射和 `LAW_DB_PATH`，两者必须指向同一个容器内文件。例如 `- /srv/law-data:/app/data`。生产环境建议在反向代理终止 HTTPS，并设置 `LAW_ALLOWED_ORIGINS` 为实际前端来源。
+如果数据库位于其他目录，修改 Compose 的卷映射和 `LAW_DB_PATH`，两者必须指向同一个容器内文件。例如 `- /srv/law-data:/app/data`。生产环境建议在反向代理终止 HTTPS，并设置 `LAW_ALLOWED_ORIGINS` 为实际前端来源。反向代理还需要转发原始请求的 `Host`、`X-Forwarded-Host` 和 `X-Forwarded-Proto`；应用会据此识别容器部署时的同源请求。若代理不转发这些请求头，必须显式设置来源，例如：
+
+```yaml
+environment:
+  LAW_HTTPS: "1"
+  LAW_ALLOWED_ORIGINS: https://law.example.com
+```
 
 ### 打包后上传到 Ubuntu
 
