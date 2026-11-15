@@ -22,10 +22,11 @@ class CaseQuery(BaseModel):
     opened_to: str | None = Field(None, description='收案日期止，YYYY-MM-DD，含当天', max_length=10)
     opponent: str | None = Field(None, description='对方当事人名称，包含匹配', max_length=200)
     case_status: str | None = Field(None, description='案件状态中文名称、平台状态或源状态编码，精确匹配', max_length=200)
+    case_number: str | None = Field(None, description='案号，包含匹配', max_length=200)
     page: int = Field(1, ge=1)
     page_size: int = Field(10, ge=1, le=50)
 
-    @field_validator('case_name', 'client_name', 'case_type', 'lead_lawyer', 'branch_name', 'opened_from', 'opened_to', 'opponent', 'case_status')
+    @field_validator('case_name', 'client_name', 'case_type', 'lead_lawyer', 'branch_name', 'opened_from', 'opened_to', 'opponent', 'case_status', 'case_number')
     @classmethod
     def clean(cls, value):
         return value.strip() or None if value is not None else None
@@ -96,6 +97,9 @@ def build_query(conn, user, filters, references):
         if value:
             conditions.append(f'instr(lower(c.{column}),lower(?))>0')
             args.append(value)
+    if filters.case_number:
+        conditions.append('instr(lower(c.number),lower(?))>0')
+        args.append(filters.case_number)
     if filters.case_type:
         codes = sorted(matching_codes(conn, 'case_category', filters.case_type) | {filters.case_type})
         labels = [r['name'] for r in conn.execute('SELECT name FROM managed_metadata WHERE category=? AND code=?', ('case_category',filters.case_type))]

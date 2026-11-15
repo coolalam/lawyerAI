@@ -3,7 +3,6 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
 
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException
@@ -92,28 +91,13 @@ class MCPGateway:
 gateway = MCPGateway()
 
 
-def transport_security():
-    hosts = ['127.0.0.1', '127.0.0.1:*', 'localhost', 'localhost:*', '[::1]', '[::1]:*', 'testserver']
-    origins = ['http://127.0.0.1', 'http://127.0.0.1:*', 'http://localhost', 'http://localhost:*', 'http://[::1]', 'http://[::1]:*']
-    hosts.extend(value.strip() for value in os.environ.get('LAW_MCP_ALLOWED_HOSTS', '').split(',') if value.strip())
-    for value in os.environ.get('LAW_ALLOWED_ORIGINS', '').split(','):
-        origin = value.strip().rstrip('/')
-        if not origin:
-            continue
-        parsed = urlsplit(origin)
-        if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
-            raise ValueError('LAW_ALLOWED_ORIGINS 必须是逗号分隔的 HTTP(S) 来源地址，不含路径')
-        origins.append(origin)
-        hosts.append(parsed.netloc)
-    return TransportSecuritySettings(enable_dns_rebinding_protection=True,
-                                     allowed_hosts=hosts, allowed_origins=origins)
-
-
 @asynccontextmanager
 async def mcp_lifespan():
     server = FastMCP('律所案件查询',stateless_http=True,json_response=True,streamable_http_path='/',
                      instructions='只读案件查询。至少填写一个条件，多个条件按 AND。先确认查询范围，按 has_more 分页读取。不要将未关联的历史记录视为不存在。',
-                     transport_security=transport_security())
+                     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
+                         allowed_hosts=os.environ.get('LAW_MCP_ALLOWED_HOSTS','127.0.0.1,localhost').split(','),
+                         allowed_origins=['http://127.0.0.1:*','http://localhost:*','http://[::1]:*']))
 
     @server.tool(name='query_cases',annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,idempotentHint=True,openWorldHint=False))
     async def search_cases(filters: CaseQuery, ctx: Context) -> dict:
@@ -139,5 +123,7 @@ async def mcp_lifespan():
 
     gateway.transport = server.streamable_http_app()
     async with server.session_manager.run():
-        try: yield
-        finally: gateway.transport = None
+        try:
+            yield
+        finally:
+            gateway.transport = None
