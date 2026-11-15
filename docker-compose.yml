@@ -15,6 +15,7 @@ services:
       LAW_DB_PATH: /app/data/jw-db-records-20261113.sqlite3
       LAW_PORT: "8000"
       LAW_ALLOWED_ORIGINS: ${LAW_ALLOWED_ORIGINS:-}
+      LAW_MCP_ALLOWED_HOSTS: ${LAW_MCP_ALLOWED_HOSTS:-}
     volumes:
       - ./data:/app/data
     healthcheck:

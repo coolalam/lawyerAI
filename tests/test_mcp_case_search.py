@@ -1,7 +1,10 @@
 import json
 from datetime import date
 import pytest
+import httpx
 from fastapi.testclient import TestClient
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 from backend import db as storage
 from backend import main, seed
@@ -10,7 +13,11 @@ from tests.test_workflows import activate, case, create, lawyer
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, request):
+    monkeypatch.delenv('LAW_ALLOWED_ORIGINS', raising=False)
+    monkeypatch.delenv('LAW_MCP_ALLOWED_HOSTS', raising=False)
+    for key, value in getattr(request, 'param', {}).items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setattr(storage,'DB_PATH',tmp_path/'office.sqlite3')
     monkeypatch.setattr(storage,'DATA',tmp_path)
     monkeypatch.setattr(main,'DATA',tmp_path)
@@ -38,6 +45,54 @@ def test_mcp_streamable_http_requires_token_and_exposes_query_tool(client):
     token_id=client.get('/api/mcp/tokens').json()['items'][0]['id']
     assert client.delete('/api/mcp/tokens/'+token_id).status_code==200
     assert client.post('/mcp',headers=headers,json={'jsonrpc':'2.0','id':3,'method':'tools/list','params':{}}).status_code==401
+
+
+@pytest.mark.parametrize('path', ['/mcp', '/mcp/'])
+@pytest.mark.parametrize('client,origin', [
+    ({'LAW_ALLOWED_ORIGINS': 'https://law.example.com:8443'}, 'https://law.example.com:8443'),
+    ({'LAW_MCP_ALLOWED_HOSTS': 'law.example.com:8443'}, None),
+], indirect=['client'])
+def test_streamable_http_sdk_initializes_and_calls_tool_at_public_host(client, path, origin):
+    token = client.post('/api/mcp/tokens', json={'name': 'Streamable HTTP 测试'}).json()['token']
+    headers = {'Authorization': 'Bearer ' + token}
+    if origin:
+        headers['Origin'] = origin
+
+    async def connect():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), headers=headers) as http:
+            async with streamable_http_client('https://law.example.com:8443' + path, http_client=http) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    initialized = await session.initialize()
+                    assert initialized.capabilities.tools is not None
+                    listed = await session.list_tools()
+                    assert [tool.name for tool in listed.tools] == ['query_cases']
+                    result = await session.call_tool('query_cases', {'filters': {'case_name': '不存在的测试案件'}})
+                    assert not result.isError
+                    assert json.loads(result.content[0].text)['items'] == []
+
+    client.portal.call(connect)
+
+
+@pytest.mark.parametrize('host', ['localhost', '127.0.0.1', '[::1]'])
+def test_mcp_allows_local_host_without_port_and_returns_json(client, host):
+    token = client.post('/api/mcp/tokens', json={'name': '本机客户端'}).json()['token']
+    response = client.post('/mcp', headers={'Host': host, 'Authorization': 'Bearer ' + token,
+                                         'Accept': 'application/json, text/event-stream'},
+                           json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
+    assert response.status_code == 200, response.text
+    assert response.headers['content-type'].startswith('application/json')
+
+
+def test_mcp_rejects_unconfigured_host_and_origin(client):
+    token = client.post('/api/mcp/tokens', json={'name': '白名单测试'}).json()['token']
+    headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/json, text/event-stream'}
+    payload = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}
+    unknown_host = client.post('/mcp', headers={**headers, 'Host': 'untrusted.example',
+                                               'X-Forwarded-Host': 'localhost'}, json=payload)
+    assert unknown_host.status_code == 421
+    unknown_origin = client.post('/mcp', headers={**headers, 'Origin': 'https://untrusted.example',
+                                                 'Sec-Fetch-Site': 'same-origin'}, json=payload)
+    assert unknown_origin.status_code == 403
 
 
 def test_token_creation_accepts_public_origin_forwarded_by_reverse_proxy(client):

@@ -115,6 +115,12 @@ Content-Type: application/json
 
 返回的令牌只显示一次，调用 MCP 时放在 `Authorization: Bearer <token>`。令牌继承创建者的案件可见范围，可在 `GET /api/mcp/tokens` 查看或 `DELETE /api/mcp/tokens/{id}` 撤销。MCP 工具名为 `query_cases`，参数为 `filters` 对象，至少填写一个案件名称、客户名称、案件类型、主办律师、分支机构名称、收案日期起止、对方当事人或案件状态条件；多个条件为 AND。日期区间含首尾，支持只填起或止日期，使用 `page` / `page_size` 分页。
 
+客户端的传输方式请选择 **Streamable HTTP**（部分客户端称为 HTTP，配置字段以客户端要求为准），URL 填 `https://你的域名/mcp`，请求头填 `Authorization: Bearer <完整 API Key>`。不要选择旧版 SSE，也不要使用 `/sse` 或令牌管理地址 `/api/mcp/tokens`。此服务采用无状态 Streamable HTTP，POST 返回 `application/json` 是正常行为。
+
+Docker 部署通过前端 Nginx 的 80 端口访问 `/mcp`。部署环境需设置 `LAW_ALLOWED_ORIGINS=https://你的域名`，MCP 会同时允许该来源及其 Host；额外域名或 IP 可通过 `LAW_MCP_ALLOWED_HOSTS` 配置，多个值用逗号分隔，非默认端口需保留（例如 `law.example.com:8443`）。修改后执行 `docker compose up -d --build`，使后端环境和 Nginx 配置同时生效。直接运行 Python 时请通过 `export` 设置环境变量。
+
+遇到 `SSE error: Invalid content type, expected "text/event-stream"` 时，先检查客户端是否选错传输方式，或在 Streamable HTTP 失败后回退到了 SSE。查看最初的 `/mcp` 响应：`text/html` 表示代理落到了网页，401 表示 Bearer 密钥缺失或无效，421 表示 Host 未获允许，403 可能是 Origin 未获允许。Streamable HTTP 客户端必须支持 JSON 响应。
+
 每个结果返回案件详情、主办律师、明确关联的客户源信息和案件当事人、财务汇总及开票 / 到账 / 收款计划 / 律师分配、盖章信息、日程与待办、合同信息。历史附件只返回原路径、偏移和长度等位置字段，不读取附件实体；未明确关联的历史记录不会按名称猜测挂接。
 
 当前本机 `localhost:8000` 已使用 `data/jw-db-records-20261113.sqlite3`。再次启动同一迁移库请运行：

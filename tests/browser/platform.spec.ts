@@ -21,6 +21,50 @@ async function action(page:Page,label:string,note='浏览器测试审批确认')
   await dialog.getByRole('button',{name:'确认'+label,exact:true}).click()
   await expect(dialog).not.toBeVisible()
 }
+
+test('Enter searches case numbers immediately and resets pagination',async({page})=>{
+  await login(page)
+  const lawyers=await (await page.request.get('/api/records/lawyers')).json()
+  for(let i=0;i<12;i++){
+    const response=await page.request.post('/api/records/cases',{data:{
+      number:`CS-ENTER-${String(i).padStart(3,'0')}`,title:'回车搜索验证',client:'搜索测试客户',
+      office:'上海总部',lead_lawyer_id:lawyers.items[0].id,category:'民事诉讼',opened_on:'2026-11-15',amount:'0'
+    }})
+    expect(response.ok()).toBeTruthy()
+  }
+  await page.getByRole('button',{name:'案件管理',exact:true}).click()
+  const search=page.getByLabel('搜索记录')
+  await search.fill('CS-ENTER-')
+  await page.getByLabel('筛选分支机构').selectOption('CS')
+  await page.getByLabel('筛选状态').selectOption('intake')
+  await expect(page.locator('.result-count')).toHaveText('共 12 条记录')
+  await page.getByRole('button',{name:'下一页',exact:true}).click()
+  await expect(page.locator('tbody tr')).toHaveCount(2)
+
+  // Freeze debounce timers: the Enter key must itself submit the new query.
+  await page.clock.install()
+  await page.clock.pauseAt(new Date(Date.now()+1000))
+  const requests:URL[]=[]
+  page.on('request',request=>{
+    const url=new URL(request.url())
+    if(url.pathname==='/api/records/cases')requests.push(url)
+  })
+  await search.fill('  CS-ENTER-007  ')
+  await search.press('Enter')
+  await expect(page.locator('tbody tr')).toHaveCount(1)
+  await expect(page.locator('tbody')).toContainText('CS-ENTER-007')
+  await expect(page.locator('.page-number')).toHaveText('1')
+  await page.clock.runFor(350)
+  expect(requests).toHaveLength(1)
+  expect(Object.fromEntries(requests[0].searchParams)).toMatchObject({q:'CS-ENTER-007',page:'1',branch:'CS',status:'intake'})
+
+  // Enter also refreshes an unchanged query on the first page.
+  const refreshed=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/records/cases')
+  await search.press('Enter')
+  expect((await refreshed).ok()).toBeTruthy()
+  expect(requests).toHaveLength(2)
+})
+
 test('dashboard, case Overview, details tabs and management render without errors',async({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message))
   await login(page)
