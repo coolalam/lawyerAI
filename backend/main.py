@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import DATA, ROOT, audit, db, encode, get_record, init_db, now, save_record, uid, unpack
-from .schema import GLOBAL_KINDS, INITIAL, ROLES, SCHEMAS, STATES, TRANSITIONS
+from .schema import ALLOCATION_ROLES, GLOBAL_KINDS, INITIAL, ROLES, SCHEMAS, STATES, TRANSITIONS, allocation_role_label
 from .security import check_access, current_user, expiry, password_hash, public_user, require_role, token_hash, verify_password, visible_case
 from .service import allocations_for, children, conflict_identity, finance_summary, matching_conflicts, money, split_amount, validate, validate_refs
 from migration.references import References
@@ -367,6 +367,8 @@ def list_records(kind: str, q: str = '', case_id: str | None = None, status: str
                 item['case_number'] = case.get('number') if case else ''
             if kind=='conflicts' and item.get('source_key') and item.get('legacy_data',{}).get('csm_search_id'):
                 item['snapshot_count']=conn.execute('SELECT COUNT(*) FROM src__t_conflict_search_det WHERE csd_search_id=?',(item['legacy_data']['csm_search_id'],)).fetchone()[0]
+            if kind == 'allocations':
+                item['role'] = allocation_role_label(item.get('role'))
             # Full legacy fields are available only in detail; keep list payload small.
             item.pop('legacy_data', None)
     return {'items': items, 'total': total, 'page': page, 'page_size': page_size}
@@ -687,8 +689,11 @@ def set_allocations(case_id: str, data: dict, user=Depends(current_user)):
             ratio = money(row.get('ratio'), 4)
             if not 0 < float(ratio) <= 100:
                 raise HTTPException(422, '每位律师比例须大于 0 且不超过 100%')
-            normalized.append({'lawyer_id': lawyer['id'], 'lawyer_name': lawyer['name'], 'ratio': ratio, 'role': str(row.get('role', '协办律师'))})
-        calculated = split_amount(scope.get('amount', '0'), normalized)
+            role = allocation_role_label(row.get('role'))
+            if scope['kind'] == 'cases' and role not in ALLOCATION_ROLES:
+                raise HTTPException(422, '承办角色必须选择主办律师或协办律师')
+            normalized.append({'lawyer_id': lawyer['id'], 'lawyer_name': lawyer['name'], 'ratio': ratio, 'role': role})
+        calculated = split_amount(scope.get('amount') or '0', normalized)
         conn.execute("UPDATE records SET deleted=1,updated_at=? WHERE kind='allocations' AND case_id=? AND json_extract(data,'$.scope_id')=? AND deleted=0", (now(), case_id, scope_id))
         for row in calculated:
             save_record(conn, 'allocations', {**row, 'scope_id': scope_id, 'status': 'active'}, user['id'], case_id=case_id)

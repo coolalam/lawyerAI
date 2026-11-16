@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .db import db, get_record, unpack
 from .schema import STATES
+from .schema import allocation_role_label
 from .security import check_access
 from .service import finance_summary
 from migration.references import References, text
@@ -183,6 +184,8 @@ def case_bundle(conn, case, user, references):
         except HTTPException as exc:
             if exc.status_code==403: continue
             raise
+        if item['kind'] == 'allocations':
+            item['role'] = allocation_role_label(item.get('role'))
         groups[item['kind']].append(item)
     lead = get_record(conn,case.get('lead_lawyer_id'), 'lawyers')
     if lead:

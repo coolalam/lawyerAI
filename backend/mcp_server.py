@@ -3,6 +3,7 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException
@@ -91,13 +92,52 @@ class MCPGateway:
 gateway = MCPGateway()
 
 
+def transport_security() -> TransportSecuritySettings:
+    """Build MCP DNS-rebinding protection from the public server settings.
+
+    ``LAW_ALLOWED_ORIGINS`` is the browser-facing configuration, while the
+    MCP transport validates the Host header separately.  Deriving hosts from
+    those origins keeps a reverse-proxied public URL usable without weakening
+    the default host allowlist.
+    """
+    local_hosts = {
+        '127.0.0.1', '127.0.0.1:*',
+        'localhost', 'localhost:*',
+        '[::1]', '[::1]:*',
+        'testserver',
+    }
+    configured_hosts = {
+        value.strip() for value in os.environ.get('LAW_MCP_ALLOWED_HOSTS', '').split(',')
+        if value.strip()
+    }
+    allowed_hosts = local_hosts | configured_hosts
+
+    allowed_origins = {
+        'http://127.0.0.1:*',
+        'http://localhost:*',
+        'http://[::1]:*',
+    }
+    for value in os.environ.get('LAW_ALLOWED_ORIGINS', '').split(','):
+        origin = value.strip().rstrip('/')
+        if not origin:
+            continue
+        allowed_origins.add(origin)
+        parsed = urlparse(origin)
+        if parsed.scheme in ('http', 'https') and parsed.netloc:
+            allowed_hosts.add(parsed.netloc)
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=sorted(allowed_hosts),
+        allowed_origins=sorted(allowed_origins),
+    )
+
+
 @asynccontextmanager
 async def mcp_lifespan():
     server = FastMCP('律所案件查询',stateless_http=True,json_response=True,streamable_http_path='/',
                      instructions='只读案件查询。至少填写一个条件，多个条件按 AND。先确认查询范围，按 has_more 分页读取。不要将未关联的历史记录视为不存在。',
-                     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
-                         allowed_hosts=os.environ.get('LAW_MCP_ALLOWED_HOSTS','127.0.0.1,localhost').split(','),
-                         allowed_origins=['http://127.0.0.1:*','http://localhost:*','http://[::1]:*']))
+                     transport_security=transport_security())
 
     @server.tool(name='query_cases',annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,idempotentHint=True,openWorldHint=False))
     async def search_cases(filters: CaseQuery, ctx: Context) -> dict:

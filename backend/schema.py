@@ -92,3 +92,17 @@ TRANSITIONS = {
 
 GLOBAL_KINDS = {'cases', 'lawyers'}
 ROLES = {'admin': '系统管理员', 'partner': '合伙人', 'lawyer': '律师', 'finance': '财务', 'clerk': '行政'}
+
+# The legacy CACBT dictionary stores case allocation roles as 0/1. Keep the
+# stored historical value readable and expose stable labels to the UI/API.
+ALLOCATION_ROLES = ('主办律师', '协办律师')
+_ALLOCATION_ROLE_LABELS = {
+    '0': '主办律师', '1': '协办律师',
+    '主办': '主办律师', '协办': '协办律师',
+    '主办律师': '主办律师', '协办律师': '协办律师',
+}
+
+
+def allocation_role_label(value, default='协办律师'):
+    text = str(value).strip() if value is not None else ''
+    return _ALLOCATION_ROLE_LABELS.get(text, text or default)

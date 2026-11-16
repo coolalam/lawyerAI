@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fastapi import HTTPException
 from .db import encode, get_record, unpack
-from .schema import SCHEMAS
+from .schema import SCHEMAS, allocation_role_label
 
 
 def money(value, places=2, allow_negative=False):
@@ -139,7 +139,10 @@ def allocations_for(conn, case_id, scope_id):
 
 def split_amount(amount, rows):
     """Deterministic largest-remainder distribution, integer cents, exact total."""
-    cents = int(Decimal(amount) * 100)
+    try:
+        cents = int(Decimal(str(amount or '0')) * 100)
+    except (InvalidOperation, TypeError, ValueError):
+        raise HTTPException(422, '分配基数金额无效，请先补充有效的合同服务费')
     weights = [Decimal(r['ratio']) for r in rows]
     if sum(weights) != Decimal(100):
         raise HTTPException(422, '律师分配比例合计必须等于 100%')
@@ -149,7 +152,7 @@ def split_amount(amount, rows):
     order = sorted(range(len(rows)), key=lambda i: (-(exact[i] - allocated[i]), rows[i]['lawyer_id']))
     for i in order[:remaining]:
         allocated[i] += 1
-    return [{**r, 'amount': format(Decimal(allocated[i]) / 100, '.2f')} for i, r in enumerate(rows)]
+    return [{**r, 'role': allocation_role_label(r.get('role')), 'amount': format(Decimal(allocated[i]) / 100, '.2f')} for i, r in enumerate(rows)]
 
 
 def normalize_name(name):
