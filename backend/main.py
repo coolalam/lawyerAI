@@ -21,6 +21,7 @@ from .security import check_access, current_user, expiry, password_hash, public_
 from .service import allocations_for, children, conflict_identity, finance_summary, matching_conflicts, money, split_amount, validate, validate_refs
 from migration.references import References
 from .mcp_server import gateway as mcp_gateway, mcp_lifespan, router as mcp_router
+from .case_list import case_list_query, case_list_rows
 
 
 @asynccontextmanager
@@ -345,10 +346,15 @@ def list_records(kind: str, q: str = '', case_id: str | None = None, status: str
                  page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200), user=Depends(current_user)):
     kind_check(kind)
     with db() as conn:
-        where, args = visible_query(conn, user, kind, q, case_id, status, branch)
-        source = records_source(kind, branch)
-        total = conn.execute('SELECT COUNT(*) FROM ' + source + ' WHERE ' + where, args).fetchone()[0]
-        rows = conn.execute('SELECT r.* FROM ' + source + ' WHERE ' + where + ' ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?', args + [page_size, (page - 1) * page_size]).fetchall()
+        if kind == 'cases':
+            where, args = case_list_query(conn, user, q, case_id, status, branch)
+            total = conn.execute('SELECT COUNT(*) FROM case_search c WHERE ' + where, args).fetchone()[0]
+            rows = case_list_rows(conn, where, args, page_size, (page - 1) * page_size)
+        else:
+            where, args = visible_query(conn, user, kind, q, case_id, status, branch)
+            source = records_source(kind, branch)
+            total = conn.execute('SELECT COUNT(*) FROM ' + source + ' WHERE ' + where, args).fetchone()[0]
+            rows = conn.execute('SELECT r.* FROM ' + source + ' WHERE ' + where + ' ORDER BY r.updated_at DESC,r.id LIMIT ? OFFSET ?', args + [page_size, (page - 1) * page_size]).fetchall()
         items = [unpack(row) for row in rows]
         references = References(conn) if kind in ('cases','lawyers') else None
         for item in items:
@@ -859,8 +865,12 @@ def export(kind: str, case_id: str | None = None, q: str = '', status: str | Non
         text = str(value if value is not None else '')
         return "'" + text if text.startswith(('=', '+', '-', '@', '\t', '\r')) else text
     with db() as conn:
-        where, args = visible_query(conn, user, kind, q, case_id, status, branch)
-        rows = conn.execute('SELECT r.* FROM ' + records_source(kind, branch) + ' WHERE ' + where, args).fetchall()
+        if kind == 'cases':
+            where, args = case_list_query(conn, user, q, case_id, status, branch)
+            rows = case_list_rows(conn, where, args)
+        else:
+            where, args = visible_query(conn, user, kind, q, case_id, status, branch)
+            rows = conn.execute('SELECT r.* FROM ' + records_source(kind, branch) + ' WHERE ' + where, args).fetchall()
         references = References(conn) if kind in ('cases','lawyers') else None
         audit(conn, user, '导出 CSV', kind, detail=f'{len(rows)} 条')
     stream = io.StringIO()

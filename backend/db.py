@@ -80,6 +80,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_records_status ON records(kind,json_extract(data,'$.status'));
         CREATE UNIQUE INDEX IF NOT EXISTS idx_case_number ON records(json_extract(data,'$.office'),json_extract(data,'$.number')) WHERE kind='cases' AND deleted=0;
         CREATE INDEX IF NOT EXISTS idx_case_branch ON records(substr(upper(json_extract(data,'$.number')),1,2),updated_at DESC,id) WHERE kind='cases' AND deleted=0;
+        CREATE INDEX IF NOT EXISTS idx_allocations_lawyer ON records(json_extract(data,'$.lawyer_id'),case_id) WHERE kind='allocations' AND deleted=0;
         CREATE TABLE IF NOT EXISTS record_versions (
           id INTEGER PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id), version INTEGER NOT NULL,
           data TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL,

@@ -61,6 +61,9 @@ def init_case_search(conn):
         CREATE INDEX IF NOT EXISTS idx_search_lawyer ON case_search(lead_lawyer_id);
         CREATE INDEX IF NOT EXISTS idx_search_status ON case_search(status);
         CREATE INDEX IF NOT EXISTS idx_search_number ON case_search(number);
+        CREATE INDEX IF NOT EXISTS idx_search_number_nocase ON case_search(number COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_search_updated ON case_search(updated_at DESC,id);
+        CREATE INDEX IF NOT EXISTS idx_search_status_updated ON case_search(status,updated_at DESC,id);
     ''')
     if 'source_area' not in {row['name'] for row in conn.execute('PRAGMA table_info(case_search)') }:
         conn.execute('ALTER TABLE case_search ADD COLUMN source_area TEXT')
