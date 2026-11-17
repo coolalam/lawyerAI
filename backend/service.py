@@ -89,7 +89,8 @@ def validate_refs(conn, kind, record):
         if not ref_kind or not value:
             continue
         ref = get_record(conn, value, ref_kind)
-        if not ref or (ref_kind != 'lawyers' and ref['case_id'] != record.get('case_id')):
+        case_id = record.get('id') if kind == 'cases' else record.get('case_id')
+        if not ref or (ref_kind != 'lawyers' and (not case_id or ref['case_id'] != case_id)):
             raise HTTPException(422, f'{field["label"]}不存在或不属于当前案件')
         if ref_kind == 'lawyers' and ref.get('status') == 'inactive':
             raise HTTPException(422, '不能指派已离职律师')

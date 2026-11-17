@@ -490,7 +490,7 @@ def edit_record(kind: str, record_id: str, data: dict, user=Depends(current_user
             raise HTTPException(422, '缺少版本号')
         if data.get('case_id') and data['case_id'] != old.get('case_id'):
             raise HTTPException(422, '不能更换所属案件')
-        locked = {'cases': ('submitted',), 'invoices': ('submitted', 'issued', 'void'), 'receipts': ('confirmed', 'void'),
+        locked = {'cases': ('submitted', 'our_seal', 'client_seal', 'contract_archive'), 'invoices': ('submitted', 'issued', 'void'), 'receipts': ('confirmed', 'void'),
                   'seals': ('submitted', 'collected', 'void'), 'contracts': ('archived',)}
         if old.get('status') in locked.get(kind, ()):
             raise HTTPException(409, '当前状态已锁定，请通过审批 / 作废流程处理')
@@ -516,6 +516,8 @@ def edit_record(kind: str, record_id: str, data: dict, user=Depends(current_user
             raise HTTPException(409, '盖章流程中的合同原件及归档文件不能直接替换')
         if kind == 'cases' and old['status'] in ('active', 'closed') and any(item.get(k) != old.get(k) for k in ('client', 'opponent')):
             raise HTTPException(409, '已立案主体不能直接变更，请新建关联案件并重新进行利冲审查')
+        if kind == 'cases' and old['status'] in ('active', 'closed') and (item.get('contract_document_id') or '') != (old.get('contract_document_id') or ''):
+            raise HTTPException(409, '已审批的委托合同附件不能替换')
         result = save_record(conn, kind, item, user['id'], record_id=record_id, expected_version=data['version'])
         audit(conn, user, '修改', kind, record_id)
         return result
@@ -533,6 +535,8 @@ def delete_record(kind: str, record_id: str, version: int, user=Depends(current_
         if item.get('status') not in ('draft', 'open', 'active', 'missing'):
             raise HTTPException(409, '已审批或已入账记录不能删除')
         if kind == 'documents':
+            if conn.execute("SELECT 1 FROM records WHERE deleted=0 AND kind='cases' AND json_extract(data,'$.contract_document_id')=? LIMIT 1", (record_id,)).fetchone():
+                raise HTTPException(409, '文件正在被立案流程使用')
             if conn.execute("SELECT 1 FROM records WHERE deleted=0 AND kind IN ('contracts','seals') AND (json_extract(data,'$.document_id')=? OR json_extract(data,'$.archive_document_id')=?) LIMIT 1", (record_id, record_id)).fetchone():
                 raise HTTPException(409, '文件正在被合同或用印流程使用')
         if kind in ('invoices', 'payment_plans'):
@@ -566,15 +570,22 @@ def transition(kind: str, record_id: str, data: dict, user=Depends(current_user)
             raise HTTPException(409, '不允许跳过流程节点')
         if target != 'void':
             ensure_case_active(conn, item.get('case_id'), kind)
-        if target in ('approved', 'rejected', 'blocked', 'cleared', 'waived', 'void', 'archived', 'active', 'confirmed') and not note:
-            raise HTTPException(422, '请填写审批意见或操作原因')
         if kind == 'cases':
-            if target in ('draft', 'submitted', 'active') and not cleared_conflict(conn, item):
+            if target in ('submitted', 'active', 'our_seal', 'client_seal', 'contract_archive') and not cleared_conflict(conn, item):
                 raise HTTPException(409, '须先完成当前当事人信息的利冲审批')
             if target == 'submitted':
                 validate('cases', {f['key']: item.get(f['key']) for f in SCHEMAS['cases']['fields']})
+                if not item.get('contract_document_id'):
+                    raise HTTPException(422, '提交立案审批前请上传委托合同附件')
+                require_document(conn, item['contract_document_id'], item['id'])
+                document = get_record(conn, item['contract_document_id'], 'documents')
+                item['contract_file_snapshot'] = {'document_id': document['id'], 'version': document['version'], **document['files'][-1]}
+            if target in ('our_seal', 'client_seal', 'contract_archive'):
+                require_role(user, 'admin', 'partner')
             if target in ('active', 'rejected', 'archived', 'void'):
                 require_role(user, 'admin', 'partner')
+            if target == 'active' and item['status'] == 'contract_archive':
+                item['contract_archived_at'] = now()
             if target == 'closed' and not item.get('result'):
                 raise HTTPException(422, '请先填写结案结果')
             if target == 'archived' and (not item.get('archive_number') or not item.get('archive_location')):
@@ -584,8 +595,6 @@ def transition(kind: str, record_id: str, data: dict, user=Depends(current_user)
             case = get_record(conn, item['case_id'], 'cases')
             if item.get('fingerprint') != conflict_identity(conn, case):
                 raise HTTPException(409, '当事人已变更，请重新发起利冲检索')
-            if target == 'cleared' and (item.get('matches') or item.get('truncated')):
-                raise HTTPException(422, '存在潜在冲突，须说明豁免依据或禁止承接')
             item['review_note'] = note
         elif kind == 'invoices':
             if target in ('approved', 'rejected', 'issued', 'void'):
@@ -650,6 +659,13 @@ def transition(kind: str, record_id: str, data: dict, user=Depends(current_user)
         result = save_record(conn, kind, item, user['id'], record_id=record_id, expected_version=data['version'])
         audit(conn, user, f'{STATES[kind].get(previous, previous)} → {STATES[kind].get(target, target)}', kind, record_id, note)
         return result
+
+
+def ensure_case_contract_mutable(conn, document_id):
+    if conn.execute("""SELECT 1 FROM records WHERE deleted=0 AND kind='cases'
+        AND json_extract(data,'$.contract_document_id')=?
+        AND json_extract(data,'$.status') NOT IN ('intake','draft','rejected') LIMIT 1""", (document_id,)).fetchone():
+        raise HTTPException(409, '立案审批或归档中的合同附件不能替换')
 
 
 def require_document(conn, document_id, case_id):
@@ -741,6 +757,7 @@ async def upload_document(case_id: str = Form(...), category: str = Form('其他
             check_access(conn, user, old, write=True)
             if old['version'] != version:
                 raise HTTPException(409, '文档已更新')
+            ensure_case_contract_mutable(conn, document_id)
             if conn.execute("SELECT 1 FROM records WHERE deleted=0 AND kind IN ('contracts','seals') AND json_extract(data,'$.status') NOT IN ('draft','rejected','void') AND (json_extract(data,'$.document_id')=? OR json_extract(data,'$.archive_document_id')=?)", (document_id, document_id)).fetchone():
                 raise HTTPException(409, '审批或归档中的文件不能替换；请另传文档')
     upload_dir = DATA / 'uploads'
@@ -765,6 +782,7 @@ async def upload_document(case_id: str = Form(...), category: str = Form('其他
                 latest = get_record(conn, old['id'])
                 if latest['version'] != version:
                     raise HTTPException(409, '文档已更新，请重新上传')
+                ensure_case_contract_mutable(conn, document_id)
                 item = latest
             else:
                 item = validate('documents', {'title': title or filename, 'category': category})
@@ -814,7 +832,7 @@ def dashboard(user=Depends(current_user)):
             accessible.add(case['id'])
             status = case.get('status')
             stats['active'] += status == 'active'
-            stats['intake'] += status in ('intake', 'draft', 'submitted', 'rejected')
+            stats['intake'] += status in ('intake', 'draft', 'submitted', 'our_seal', 'client_seal', 'contract_archive', 'rejected')
             stats['closed'] += status in ('closed', 'archived')
             categories[case.get('category', '未分类')] = categories.get(case.get('category', '未分类'), 0) + 1
             currency = case.get('currency', 'CNY')
@@ -843,7 +861,7 @@ def dashboard(user=Depends(current_user)):
                 tasks.append(item)
         for row in rows:
             c = unpack(row)
-            if c.get('status') == 'submitted':
+            if c.get('status') in ('submitted', 'our_seal', 'client_seal', 'contract_archive'):
                 pending.append(c)
         stats['pending'] = len(pending)
         stats['overdue'] = sum(bool(t.get('due_on')) and t['due_on'] < date.today().isoformat() for t in tasks)

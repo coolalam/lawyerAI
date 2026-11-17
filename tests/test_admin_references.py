@@ -102,7 +102,7 @@ def test_metadata_management_pagination_labels_and_authorization(client):
     assert client.patch('/api/admin/metadata/'+state['id'],json={'name':'办理阶段'}).status_code==200
     schema=client.get('/api/schema').json()
     assert schema['states']['cases']['active']=='办理阶段'
-    assert schema['transitions']['cases']['submitted']==['active','rejected']
+    assert schema['transitions']['cases']['submitted']==['our_seal','rejected']
     client.post('/api/admin/users',json={'username':'staff','name':'行政','role':'clerk','password':'Test-password-2026'})
     client.post('/api/auth/logout');client.post('/api/auth/login',json={'username':'staff','password':'Test-password-2026'})
     for path in ('departments','members','metadata','metadata/categories'):

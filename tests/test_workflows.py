@@ -45,7 +45,13 @@ def step(c,item,status,note='测试审批意见'):
 def activate(c,item):
     conflict=c.post(f"/api/cases/{item['id']}/conflicts",json={}).json()
     step(c,conflict,'waived' if conflict['matches'] else 'cleared')
-    item=step(c,item,'draft');item=step(c,item,'submitted');return step(c,item,'active')
+    document=upload(c,item)
+    response=c.patch(f"/api/records/cases/{item['id']}",json={'contract_document_id':document['id'],'version':item['version']})
+    assert response.status_code==200,response.text
+    item=response.json()
+    for status in ('submitted','our_seal','client_seal','contract_archive','active'):
+        item=step(c,item,status)
+    return item
 
 
 def allocate(c,item,rows):
@@ -63,12 +69,12 @@ def test_intake_requires_conflict_and_approval(client):
     item=case(client)
     r=client.post(f"/api/records/cases/{item['id']}/transition",json={'status':'active','version':1,'note':'跳步'})
     assert r.status_code==409
-    r=client.post(f"/api/records/cases/{item['id']}/transition",json={'status':'draft','version':1,'note':'跳过利冲'})
+    r=client.post(f"/api/records/cases/{item['id']}/transition",json={'status':'submitted','version':1,'note':'跳过利冲'})
     assert r.status_code==409
     assert client.post('/api/records/invoices',json={'case_id':item['id']}).status_code==409
     approved=activate(client,item)
     assert approved['status']=='active'
-    assert [x['to'] for x in approved['history']]==['draft','submitted','active']
+    assert [x['to'] for x in approved['history']]==['submitted','our_seal','client_seal','contract_archive','active']
 
 
 def test_conflict_is_invalidated_by_party_changes(client):
@@ -76,18 +82,21 @@ def test_conflict_is_invalidated_by_party_changes(client):
     report=client.post(f"/api/cases/{item['id']}/conflicts",json={}).json()
     step(client,report,'cleared')
     create(client,'parties',{'case_id':item['id'],'name':'新关联企业','role':'第三人'})
-    r=client.post(f"/api/records/cases/{item['id']}/transition",json={'status':'draft','version':1,'note':'资料改变'})
+    r=client.post(f"/api/records/cases/{item['id']}/transition",json={'status':'submitted','version':1,'note':'资料改变'})
     assert r.status_code==409
 
 
-def test_conflict_hits_require_waiver(client):
+@pytest.mark.parametrize('decision', ['cleared', 'waived'])
+def test_conflict_hits_can_be_reviewed_without_mandatory_notes(client, decision):
     case(client,number='FIRST',client_name='关联公司')
     item=case(client,number='SECOND',client_name='关联公司')
     report=client.post(f"/api/cases/{item['id']}/conflicts",json={}).json()
     assert len(report['matches'])>=1
-    r=client.post(f"/api/records/conflicts/{report['id']}/transition",json={'status':'cleared','version':1,'note':'试图直接通过'})
-    assert r.status_code==422
-    assert step(client,report,'waived')['status']=='waived'
+    r=client.post(f"/api/records/conflicts/{report['id']}/transition",json={'status':decision,'version':1})
+    assert r.status_code==200,r.text
+    assert r.json()['matches']==report['matches']
+    assert r.json()['review_note']==''
+    assert r.json()['history'][-1]['to']==decision
 
 
 def test_finance_exact_allocation_snapshots_and_reversal(client):

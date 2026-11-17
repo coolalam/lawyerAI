@@ -20,7 +20,8 @@ SCHEMAS = {
         f('hourly_rate', '计时费率', 'money'), f('risk_ratio', '风险代理比例 %', 'ratio'),
         f('start_on', '委托开始日期', 'date'), f('end_on', '委托到期日期', 'date'),
         f('description', '案情简介', 'textarea'), f('mandate', '委托事项', 'textarea'),
-        f('confidential', '保密案件', 'boolean', default=False), f('archive_number', '归档编号'),
+        f('confidential', '保密案件', 'boolean', default=False), f('contract_document_id', '委托合同附件', 'document'),
+        f('archive_number', '归档编号'),
         f('archive_location', '卷宗存放位置'), f('closed_on', '结案日期', 'date'),
         f('result', '结案结果', 'textarea'), f('notes', '备注', 'textarea')]),
     'lawyers': dict(label='律师', fields=[f('name', '姓名', required=True), f('office', '分所', default='上海总部'),
@@ -65,7 +66,7 @@ SCHEMAS = {
 }
 
 STATES = {
-    'cases': {'intake': '利冲审查', 'draft': '待填申请', 'submitted': '立案待审批', 'rejected': '立案退回', 'active': '办理中', 'closed': '已结案', 'archived': '已归档', 'void': '已撤销'},
+    'cases': {'intake': '利冲审查', 'draft': '待提交审批', 'submitted': '立案待审批', 'our_seal': '待我方盖章', 'client_seal': '待对方盖章', 'contract_archive': '待合同归档', 'rejected': '立案退回', 'active': '办理中', 'closed': '已结案', 'archived': '已归档', 'void': '已撤销'},
     'lawyers': {'active': '在职', 'inactive': '离职'}, 'parties': {'active': '有效'},
     'payment_plans': {'active': '待收款', 'done': '已完成'},
     'invoices': {'draft': '草稿', 'submitted': '待审核', 'approved': '待开票', 'issued': '已开票', 'rejected': '已退回', 'void': '已作废'},
@@ -79,7 +80,9 @@ STATES = {
 
 INITIAL = {'cases': 'intake', 'contracts': 'draft', 'invoices': 'draft', 'receipts': 'draft', 'seals': 'draft', 'tasks': 'open', 'conflicts': 'pending'}
 TRANSITIONS = {
-    'cases': {'intake': ['draft', 'void'], 'draft': ['submitted', 'void'], 'submitted': ['active', 'rejected'], 'rejected': ['submitted', 'void'], 'active': ['closed', 'void'], 'closed': ['active', 'archived']},
+    # ``draft`` remains for migrated/older records; new cases can submit
+    # directly from intake after the conflict review and contract upload.
+    'cases': {'intake': ['submitted', 'void'], 'draft': ['submitted', 'void'], 'submitted': ['our_seal', 'rejected'], 'our_seal': ['client_seal', 'rejected'], 'client_seal': ['contract_archive', 'rejected'], 'contract_archive': ['active', 'rejected'], 'rejected': ['submitted', 'void'], 'active': ['closed', 'void'], 'closed': ['active', 'archived']},
     'contracts': {'draft': ['stamping'], 'stamped': ['archived']},
     'lawyers': {'active': ['inactive'], 'inactive': ['active']},
     'payment_plans': {'active': ['done'], 'done': ['active']},
