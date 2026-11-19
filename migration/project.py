@@ -5,6 +5,8 @@ import json
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from backend.db import encode, get_record, now, save_record
+from backend.invoice_states import legacy_invoice_status
+from backend.receipt_states import RECEIPT_STATES
 from migration.references import References
 
 
@@ -72,7 +74,7 @@ class Projector:
             return 'legacy:'+text(source)
         valid = {
             't_case': {'intake','draft','submitted','rejected','active','closed','archived','void'},
-            't_invoice': {'draft','submitted','approved','issued','rejected','void'},
+            't_invoice': {'draft','submitted','approved','issued','collected','rejected','red_requested','red_reversed','void'},
             't_payment': {'draft','confirmed','void'},
             'xz_seal_request': {'draft','submitted','approved','stamped','collected','rejected','void'},
             't_conflict_search_mstr': {'pending','cleared','waived','blocked'},
@@ -192,13 +194,15 @@ class Projector:
 
     def invoices(self,r):
         key=[r['iv_index']]
+        source_status = text(r.get('iv_status')) + '|' + text(r.get('iv_app_status'))
+        mapped_status = legacy_invoice_status(source_status)
         self.save('t_invoice',key,'invoices',r,{'title':text(r.get('iv_title')),'number':text(r.get('iv_id')),
             'tax_id':text(r.get('iv_tax_no')),'amount':self.amount('t_invoice',key,r.get('iv_amount')),
             'tax_amount':self.amount('t_invoice',key,r.get('iv_tax_amount'),True), 'legacy_tax_ratio':r.get('iv_tax_ratio'),
             'type':text(r.get('iv_type')), 'issued_on':text(r.get('iv_date'))[:10], 'bank_account':text(r.get('iv_bank_no')),
             'address':text(r.get('iv_address')), 'phone':text(r.get('iv_phone')), 'notes':text(r.get('iv_remarks')),
             'currency':{'RMB':'CNY'}.get(text(r.get('iv_currency')),text(r.get('iv_currency')) or 'UNKNOWN'),
-            'status':self.status('t_invoice',key,text(r.get('iv_status'))+'|'+text(r.get('iv_app_status')),{}),
+            'status':self.status('t_invoice',key,source_status,{source_status: mapped_status} if mapped_status else {}),
             'legacy_status_label':'原状态 '+text(r.get('iv_status'))+'/'+text(r.get('iv_app_status'))},
             self.linked_case('t_invoice',key,r['iv_office_id'],r['iv_case_id']))
 
@@ -215,7 +219,7 @@ class Projector:
             'invoice_id':invoice_id, 'lawyer_fee':self.amount('t_payment',key,r.get('pay_lawyerFee'),True),
             'case_fee':self.amount('t_payment',key,r.get('pay_caseFee'),True), 'notes':text(r.get('pay_remarks')),
             'currency':{'RMB':'CNY'}.get(text(r.get('pay_currency')),text(r.get('pay_currency')) or 'UNKNOWN'),
-            'status':self.status('t_payment',key,r.get('pay_status'),{})},linked)
+            'status':self.status('t_payment',key,text(r.get('pay_status')).upper(),RECEIPT_STATES)},linked)
 
     def case_shares(self,r):
         key=[r['cld_office_id'],r['cld_case_id'],r['cld_empl_id'],r['cld_task_type']]

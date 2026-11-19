@@ -39,12 +39,28 @@
 
 `migration/rules.example.json` 是规则模板。只有确认旧系统含义后才填写：
 
-- `statuses.t_invoice` 的键为 `iv_status|iv_app_status`，值为 `draft/submitted/approved/issued/rejected/void`。
+- `statuses.t_invoice` 的键为 `iv_status|iv_app_status`，值为 `draft/submitted/approved/issued/collected/rejected/red_requested/red_reversed/void`。
 - `statuses.t_payment` 的键为 `pay_status`，值为 `draft/confirmed/void`。
 - `statuses.t_conflict_search_mstr` 的键为 `csm_status`，值为 `pending/cleared/waived/blocked`。
 - `seal_case_links` 的键为原始 `xzsr_id`，值为 `[分所ID, 原案号]`。
 
-从已读取的数据字典确认的案件和用印状态已内置。未确认的值保留为 `legacy:原值`，不计入已确认财务汇总，并写入 `migration_issues`。旧利冲审查可以作为历史记录查询；恢复新的立案审批时应按当前当事人信息重新生成检索快照，避免把旧审批直接当作当前授权。
+从已读取的数据字典确认的案件和用印状态已内置。发票申请状态已按 JianWeiOA 源码核对（见下表）。到账状态也已核对（见下文）。其余未确认的值保留为 `legacy:原值`，不计入已确认财务汇总，并写入 `migration_issues`。旧利冲审查可以作为历史记录查询；恢复新的立案审批时应按当前当事人信息重新生成检索快照，避免把旧审批直接当作当前授权。
+
+发票映射依据 `源代码/financeinvoice/invoiceReceiveList.aspx.vb` 的 `getApplyStatus`，并以同目录的 `invoiceApplyList.aspx.vb`（Z）和 `invoiceReceiveList.aspx`（S）补全待审批编码。`iv_status` 是到账 / 作废状态，审批阶段取 `iv_app_status`：
+
+| 原申请状态 | 新状态 | 页面名称 |
+| --- | --- | --- |
+| N | draft | 未提交 |
+| Z / S | submitted | 行政审批 |
+| A | approved | 财务开票中 |
+| B | issued | 已开票待领取 |
+| C | collected | 发票审领成功 |
+| D | rejected | 申请被退回 |
+| X（或 iv_status=X） | void | 已作废（历史） |
+
+例如 `A|Z` / `AZ` 为行政审批，`A|D` / `AD` 为申请被退回。历史作废不等同于新增的“已冲红”。已有业务记录在读取、筛选、导出和金额汇总时统一解释编码，保留原始 JSON、版本及源字段；新导入记录直接使用已确认状态，显式迁移规则仍优先。已开票待领取、审领成功、冲红申请均计入开票金额，财务确认已冲红后排除；历史作废和未知状态不计入。
+
+到账状态依据 `源代码/financereceive/receivecaseregister.aspx.vb`（新登记 A）、`receivemain.aspx.vb`（发送合伙人 S、删除 X）、`myreceivelst.aspx`（确认待分配 Y、已分配 B），并由 `invoicemain.aspx.vb` 的非 X 到账合计口径交叉验证。A/S/Y/B 均表示款项已到账，映射为 `confirmed`（已到账）；X 映射为 `void`（已冲销）。后续分配阶段的源状态保留在原始字段中，不等同于款项未到账。未知值继续保留为 `legacy:原值`，页面显示“到账状态待核对”。读取、列表过滤、导出、财务汇总、重复流水检查和冲红前到账检查使用同一映射；无需批量改写已迁入记录。
 
 律师分配中的异常比例、原金额小数位超过新业务精度、负数/红冲金额、自由文本收费描述、无法唯一关联的发票或人员等均保留原值并进入异常清单；不能通过将它们改成 0 或强制缩放比例来让验收通过。
 

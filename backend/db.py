@@ -81,6 +81,7 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_case_number ON records(json_extract(data,'$.office'),json_extract(data,'$.number')) WHERE kind='cases' AND deleted=0;
         CREATE INDEX IF NOT EXISTS idx_case_branch ON records(substr(upper(json_extract(data,'$.number')),1,2),updated_at DESC,id) WHERE kind='cases' AND deleted=0;
         CREATE INDEX IF NOT EXISTS idx_allocations_lawyer ON records(json_extract(data,'$.lawyer_id'),case_id) WHERE kind='allocations' AND deleted=0;
+        CREATE INDEX IF NOT EXISTS idx_allocation_scope ON records(case_id,json_extract(data,'$.scope_id')) WHERE kind='allocations';
         CREATE TABLE IF NOT EXISTS record_versions (
           id INTEGER PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id), version INTEGER NOT NULL,
           data TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -202,6 +203,16 @@ def ensure_managed_references(conn):
                            'payment_plans':'payment_plan_status'}.items():
         for code,name in STATES[kind].items():
             add(category,code,name,'','application',f'{category}:{code}')
+    # Upgrade former built-in invoice labels without overwriting custom names.
+    for code, old_name in {'draft': '草稿', 'submitted': '待审核', 'approved': '待开票',
+                           'issued': '已开票', 'rejected': '已退回', 'void': '已作废'}.items():
+        conn.execute("""UPDATE managed_metadata SET name=?,updated_at=?
+            WHERE category='invoice_status' AND code=? AND name=? AND source_table='application'""",
+            (STATES['invoices'][code], timestamp, code, old_name))
+
+    for code, old_name in {'draft': '待核销', 'confirmed': '已确认'}.items():
+        conn.execute("UPDATE managed_metadata SET name=?,updated_at=? WHERE category='payment_status' AND code=? AND name=? AND source_table='application'",
+                     (STATES['receipts'][code], timestamp, code, old_name))
 
 
 def unpack(row):
@@ -210,6 +221,12 @@ def unpack(row):
     value = json.loads(row['data'])
     value.update(id=row['id'], kind=row['kind'], case_id=row['case_id'], version=row['version'],
                  created_at=row['created_at'], updated_at=row['updated_at'], source_key=row['source_key'])
+    if row['kind'] == 'invoices':
+        from .invoice_states import normalize_invoice
+        normalize_invoice(value)
+    elif row['kind'] == 'receipts':
+        from .receipt_states import normalize_receipt
+        normalize_receipt(value)
     return value
 
 

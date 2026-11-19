@@ -116,11 +116,12 @@ def test_finance_exact_allocation_snapshots_and_reversal(client):
     assert client.get(f"/api/records/receipts/{receipt['id']}").json()['allocation_snapshot']==receipt['allocation_snapshot']
     r=client.patch(f"/api/records/receipts/{receipt['id']}",json={'amount':'20','version':receipt['version']})
     assert r.status_code==409
-    r=client.post(f"/api/records/invoices/{invoice['id']}/transition",json={'status':'void','note':'未冲销到账','version':invoice['version']})
+    invoice=step(client,invoice,'red_requested')
+    r=client.post(f"/api/records/invoices/{invoice['id']}/transition",json={'status':'red_reversed','note':'未冲销到账','version':invoice['version']})
     assert r.status_code==409
     step(client,receipt,'void')
     assert client.get(f"/api/records/cases/{item['id']}").json()['finance']['received']=='0.00'
-    assert step(client,invoice,'void')['status']=='void'
+    assert step(client,invoice,'red_reversed')['status']=='red_reversed'
 
 
 def test_contract_stamp_archive_process(client):

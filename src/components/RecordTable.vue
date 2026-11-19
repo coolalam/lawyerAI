@@ -17,7 +17,7 @@ function lawyerName(id: string, lawyers: any[]) { return lawyers.find(x => x.id 
         <th>{{ kind === 'cases' ? '主办律师' : '更新时间' }}</th><th>状态</th><th></th>
       </tr></thead>
       <tbody><tr v-for="row in rows" :key="row.id" @click="$emit('open',row)" tabindex="0" @keydown.enter="$emit('open',row)">
-        <td><div class="record-title"><span class="record-icon" :class="kind"><FolderOpen v-if="kind === 'cases'" :size="18"/><span v-else-if="kind === 'lawyers'">{{ row.name?.slice(-2) }}</span><FileText v-else :size="17"/></span><div><strong>{{ row.title || row.name || '未命名' }}</strong><small>{{ row.number || row.license || (row.demo ? '演示记录' : row.source_key ? '历史迁移记录' : '') }}</small></div></div></td>
+        <td><div class="record-title"><span class="record-icon" :class="kind"><FolderOpen v-if="kind === 'cases'" :size="18"/><span v-else-if="kind === 'lawyers'">{{ row.name?.slice(-2) }}</span><FileText v-else :size="17"/></span><div><strong>{{ (kind === 'receipts' ? row.invoice_title : '') || row.title || row.name || '未命名' }}</strong><small>{{ (kind === 'receipts' ? (row.invoice_number || row.invoice_title) : '') || row.number || row.license || (row.demo ? '演示记录' : row.source_key ? '历史迁移记录' : '') }}</small></div></div></td>
         <td v-if="kind === 'cases'"><span class="cell-text">{{ row.client }}</span><small>{{ row.category }}<span class="dot-separator">·</span>{{ row.department || row.office }}</small></td>
         <td v-else-if="kind === 'lawyers'">{{ row.department || '—' }}<small>{{ row.specialty || row.title }}</small></td>
         <td v-else><span class="cell-text">{{ row.case_title || row.recipient || row.contact || '—' }}</span><small>{{ row.case_number || row.number }}</small></td>

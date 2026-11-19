@@ -4,6 +4,18 @@ from backend import db as storage
 from tests.test_workflows import case, client, lawyer, step, upload
 
 
+def test_case_waiver_checkbox_is_saved_and_can_be_unchecked(client):
+    matter = case(client)
+    path = f"/api/records/cases/{matter['id']}"
+    assert matter['conflict_waiver_clause'] is False
+    for value in (True, False):
+        response = client.patch(path, json={'conflict_waiver_clause': value, 'version': matter['version']})
+        assert response.status_code == 200, response.text
+        matter = client.get(path).json()
+        assert matter['conflict_waiver_clause'] is value
+    assert client.patch(path, json={'conflict_waiver_clause': 'false', 'version': matter['version']}).status_code == 422
+
+
 def prepare(client, person=None):
     item = case(client, person)
     report = client.post(f"/api/cases/{item['id']}/conflicts", json={}).json()

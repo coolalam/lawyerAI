@@ -78,7 +78,7 @@ def check_access(conn, user, record, write=False):
         allowed = {
             'cases': ('admin', 'partner', 'lawyer'), 'lawyers': ('admin',),
             'parties': ('admin', 'partner', 'lawyer'), 'allocations': ('admin', 'partner', 'finance'),
-            'invoices': ('admin', 'partner', 'lawyer', 'finance'), 'receipts': ('admin', 'finance'),
+            'invoices': ('admin', 'partner', 'lawyer', 'finance', 'clerk'), 'receipts': ('admin', 'finance'),
             'payment_plans': ('admin', 'partner', 'finance'), 'documents': ('admin', 'partner', 'lawyer', 'clerk'),
             'seals': ('admin', 'partner', 'lawyer', 'clerk'), 'tasks': ('admin', 'partner', 'lawyer', 'clerk'),
             'contracts': ('admin', 'partner', 'lawyer', 'clerk'),

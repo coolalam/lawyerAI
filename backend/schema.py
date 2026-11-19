@@ -20,7 +20,7 @@ SCHEMAS = {
         f('hourly_rate', '计时费率', 'money'), f('risk_ratio', '风险代理比例 %', 'ratio'),
         f('start_on', '委托开始日期', 'date'), f('end_on', '委托到期日期', 'date'),
         f('description', '案情简介', 'textarea'), f('mandate', '委托事项', 'textarea'),
-        f('confidential', '保密案件', 'boolean', default=False), f('contract_document_id', '委托合同附件', 'document'),
+        f('confidential', '保密案件', 'boolean', default=False), f('conflict_waiver_clause', '是否包含利冲豁免条款', 'boolean', default=False), f('contract_document_id', '委托合同附件', 'document'),
         f('archive_number', '归档编号'),
         f('archive_location', '卷宗存放位置'), f('closed_on', '结案日期', 'date'),
         f('result', '结案结果', 'textarea'), f('notes', '备注', 'textarea')]),
@@ -69,8 +69,8 @@ STATES = {
     'cases': {'intake': '利冲审查', 'draft': '待提交审批', 'submitted': '立案待审批', 'our_seal': '待我方盖章', 'client_seal': '待对方盖章', 'contract_archive': '待合同归档', 'rejected': '立案退回', 'active': '办理中', 'closed': '已结案', 'archived': '已归档', 'void': '已撤销'},
     'lawyers': {'active': '在职', 'inactive': '离职'}, 'parties': {'active': '有效'},
     'payment_plans': {'active': '待收款', 'done': '已完成'},
-    'invoices': {'draft': '草稿', 'submitted': '待审核', 'approved': '待开票', 'issued': '已开票', 'rejected': '已退回', 'void': '已作废'},
-    'receipts': {'draft': '待核销', 'confirmed': '已确认', 'void': '已冲销'},
+    'invoices': {'draft': '未提交', 'submitted': '行政审批', 'approved': '财务开票中', 'issued': '已开票待领取', 'collected': '发票审领成功', 'rejected': '申请被退回', 'red_requested': '发票冲红申请', 'red_reversed': '已冲红', 'void': '已作废（历史）'},
+    'receipts': {'draft': '待确认到账', 'confirmed': '已到账', 'void': '已冲销'},
     'documents': {'active': '已上传', 'missing': '待补附件'},
     'contracts': {'draft': '待申请盖章', 'stamping': '盖章处理中', 'stamped': '待归档', 'archived': '已归档'},
     'seals': {'draft': '草稿', 'submitted': '待审批', 'approved': '待盖章', 'stamped': '待领取', 'collected': '已领取', 'rejected': '已退回', 'void': '已撤销'},
@@ -86,7 +86,7 @@ TRANSITIONS = {
     'contracts': {'draft': ['stamping'], 'stamped': ['archived']},
     'lawyers': {'active': ['inactive'], 'inactive': ['active']},
     'payment_plans': {'active': ['done'], 'done': ['active']},
-    'invoices': {'draft': ['submitted'], 'submitted': ['approved', 'rejected'], 'rejected': ['submitted'], 'approved': ['issued', 'void'], 'issued': ['void']},
+    'invoices': {'draft': ['submitted'], 'submitted': ['approved', 'rejected'], 'rejected': ['submitted'], 'approved': ['issued'], 'issued': ['collected', 'red_requested'], 'collected': ['red_requested'], 'red_requested': ['red_reversed']},
     'receipts': {'draft': ['confirmed'], 'confirmed': ['void']},
     'seals': {'draft': ['submitted'], 'submitted': ['approved', 'rejected', 'void'], 'rejected': ['submitted', 'void'], 'approved': ['stamped', 'void'], 'stamped': ['collected']},
     'tasks': {'open': ['done'], 'done': ['open']},
@@ -94,6 +94,16 @@ TRANSITIONS = {
 }
 
 GLOBAL_KINDS = {'cases', 'lawyers'}
+# A red-letter request does not reverse the invoice until finance confirms it.
+EFFECTIVE_INVOICE_STATES = ('issued', 'collected', 'red_requested')
+INVOICE_ACTION_ROLES = {
+    'submitted': ('admin', 'partner', 'lawyer', 'finance'),
+    'approved': ('admin', 'clerk'), 'rejected': ('admin', 'clerk'),
+    'issued': ('admin', 'finance'),
+    'collected': ('admin', 'partner', 'lawyer', 'finance', 'clerk'),
+    'red_requested': ('admin', 'partner', 'lawyer', 'finance'),
+    'red_reversed': ('admin', 'finance'),
+}
 ROLES = {'admin': '系统管理员', 'partner': '合伙人', 'lawyer': '律师', 'finance': '财务', 'clerk': '行政'}
 
 # The legacy CACBT dictionary stores case allocation roles as 0/1. Keep the

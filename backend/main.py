@@ -10,18 +10,23 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import DATA, ROOT, audit, db, encode, get_record, init_db, now, save_record, uid, unpack
-from .schema import ALLOCATION_ROLES, GLOBAL_KINDS, INITIAL, ROLES, SCHEMAS, STATES, TRANSITIONS, allocation_role_label
+from .schema import ALLOCATION_ROLES, EFFECTIVE_INVOICE_STATES, GLOBAL_KINDS, INITIAL, INVOICE_ACTION_ROLES, ROLES, SCHEMAS, STATES, TRANSITIONS, allocation_role_label
+from .invoice_states import invoice_status_sql
+from .receipt_states import receipt_status_sql
+from .invoice_allocations import allocation_form, calculate_plan, check_invoice_allocation_write, invoice_snapshot, replace_plan, scope_allocations
 from .security import check_access, current_user, expiry, password_hash, public_user, require_role, token_hash, verify_password, visible_case
 from .service import allocations_for, children, conflict_identity, finance_summary, matching_conflicts, money, split_amount, validate, validate_refs
 from migration.references import References
 from .mcp_server import gateway as mcp_gateway, mcp_lifespan, router as mcp_router
 from .case_list import case_list_query, case_list_rows
+from .revenue import revenue_report
 
 
 @asynccontextmanager
@@ -290,7 +295,7 @@ def schemas(user=Depends(current_user)):
             for field in schema[kind]['fields']:
                 if field['key']=='department': field['suggestions']=departments
                 if field['key']=='cause': field['suggestions']=causes
-    return {'schemas': schema, 'states': states, 'transitions': TRANSITIONS, 'roles': ROLES}
+    return {'schemas': schema, 'states': states, 'transitions': TRANSITIONS, 'roles': ROLES, 'invoice_action_roles': INVOICE_ACTION_ROLES}
 
 
 def visible_query(conn, user, kind, q='', case_id=None, status=None, branch=''):
@@ -304,6 +309,10 @@ def visible_query(conn, user, kind, q='', case_id=None, status=None, branch=''):
     if status:
         if kind == 'lawyers':
             conditions.append("CASE WHEN r.version=1 AND json_extract(r.data,'$.legacy_table')='t_employee' AND trim(json_extract(r.data,'$.legacy_data.emp_status'))='X' AND json_extract(r.data,'$.status')='active' THEN 'inactive' ELSE json_extract(r.data,'$.status') END=?")
+        elif kind == 'receipts':
+            conditions.append(receipt_status_sql("json_extract(r.data,'$.status')") + '=?')
+        elif kind == 'invoices':
+            conditions.append(invoice_status_sql("json_extract(r.data,'$.status')") + '=?')
         else:
             conditions.append("json_extract(r.data,'$.status')=?")
         args.append(status)
@@ -331,6 +340,20 @@ def visible_query(conn, user, kind, q='', case_id=None, status=None, branch=''):
             if kind == 'documents':
                 conditions.append("COALESCE(json_extract(r.data,'$.confidential'),0)=0")
     return ' AND '.join(conditions), args
+
+
+@app.get('/api/finance/revenue')
+def invoice_revenue(lawyer_id: str = '', case_id: str = '', date_from: date | None = None,
+                    date_to: date | None = None, date_basis: Literal['issued_on', 'created_at'] = 'issued_on',
+                    currency: str = Query('CNY', max_length=10),
+                    dimension: Literal['lawyer', 'case', 'department', 'category', 'office'] = 'lawyer',
+                    page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), user=Depends(current_user)):
+    with db() as conn:
+        conn.execute('BEGIN')
+        where, args = visible_query(conn, user, 'invoices', case_id=case_id or None)
+        return revenue_report(conn, where, args, lawyer_id=lawyer_id, date_from=date_from, date_to=date_to,
+                              date_basis=date_basis, currency=currency, dimension=dimension,
+                              page=page, page_size=page_size)
 
 
 def records_source(kind, branch):
@@ -369,6 +392,8 @@ def list_records(kind: str, q: str = '', case_id: str | None = None, status: str
                 item['snapshot_count']=conn.execute('SELECT COUNT(*) FROM src__t_conflict_search_det WHERE csd_search_id=?',(item['legacy_data']['csm_search_id'],)).fetchone()[0]
             if kind == 'allocations':
                 item['role'] = allocation_role_label(item.get('role'))
+            if kind == 'receipts':
+                receipt_invoice_labels(conn, item)
             # Full legacy fields are available only in detail; keep list payload small.
             item.pop('legacy_data', None)
     return {'items': items, 'total': total, 'page': page, 'page_size': page_size}
@@ -380,6 +405,7 @@ def record_detail(kind: str, record_id: str, user=Depends(current_user)):
     with db() as conn:
         item = get_record(conn, record_id, kind)
         check_access(conn, user, item)
+        if kind == 'receipts': receipt_invoice_labels(conn, item)
         if kind in ('cases','lawyers'): References(conn).enrich(item)
         if kind == 'lawyers' and user['role'] != 'admin':
             item.pop('legacy_data', None)
@@ -444,13 +470,61 @@ def bind_managed_references(conn, kind, item, data):
         if len(rows)==1: item['cause_code']=rows[0]['code']
 
 
+def receipt_invoice_labels(conn, item):
+    invoice = get_record(conn, item.get('invoice_id'), 'invoices') if item.get('invoice_id') else None
+    if invoice and invoice['case_id'] == item.get('case_id'):
+        item['invoice_title'] = invoice.get('title', '')
+        item['invoice_number'] = invoice.get('number', '')
+
+
+def receipt_defaults(conn, user, data, old=None):
+    data = dict(data)
+    if not data.get('invoice_id'):
+        return data
+    invoice = get_record(conn, data['invoice_id'], 'invoices')
+    check_access(conn, user, invoice)
+    case_ids = [(old or {}).get('case_id'), data.get('case_id')]
+    if any(case_id and case_id != invoice['case_id'] for case_id in case_ids):
+        raise HTTPException(422, '到账案件必须与关联发票的案件一致')
+    data['case_id'] = invoice['case_id']
+    if not data.get('payer') and (not old or data.get('invoice_id') != old.get('invoice_id')):
+        data['payer'] = invoice.get('title') or get_record(conn, invoice['case_id'], 'cases').get('client', '')
+    if not data.get('title') and not old:
+        data['title'] = (invoice.get('number') or invoice.get('title') or '开票申请') + '到账'
+    return data
+
+
+@app.get('/api/finance/receipt-invoices')
+def receipt_invoice_choices(q: str = '', case_id: str = '', page: int = Query(1, ge=1), user=Depends(current_user)):
+    with db() as conn:
+        where, args = visible_query(conn, user, 'invoices', q=q, case_id=case_id or None)
+        where += " AND " + invoice_status_sql("json_extract(r.data,'$.status')") + " IN (" + ','.join('?' for _ in EFFECTIVE_INVOICE_STATES) + ")"
+        args += list(EFFECTIVE_INVOICE_STATES)
+        total = conn.execute('SELECT COUNT(*) FROM records r WHERE ' + where, args).fetchone()[0]
+        rows = conn.execute("""SELECT r.id,r.case_id,json_extract(r.data,'$.title') AS title,
+            json_extract(r.data,'$.number') AS number,json_extract(r.data,'$.amount') AS amount,
+            json_extract(r.data,'$.currency') AS currency,c.number AS case_number,c.title AS case_title
+            FROM records r LEFT JOIN case_search c ON c.id=r.case_id WHERE """ + where +
+            ' ORDER BY r.updated_at DESC,r.id LIMIT 50 OFFSET ?', [*args, (page-1)*50])
+        return {'items': [dict(row) for row in rows], 'total': total, 'page': page}
+
+
 @app.post('/api/records/{kind}', status_code=201)
 def create_record(kind: str, data: dict, user=Depends(current_user)):
     kind_check(kind)
+    if kind == 'invoices':
+        require_role(user, 'admin', 'partner', 'lawyer', 'finance')
     if kind in ('allocations', 'conflicts', 'documents'):
         raise HTTPException(422, '请使用对应的专用流程')
+    plan = data.get('allocation') if kind == 'invoices' else None
+    if kind == 'invoices' and 'allocation' in data:
+        data = {k: v for k, v in data.items() if k != 'allocation'}
+        if not isinstance(plan, dict):
+            raise HTTPException(422, '发票分配表无效')
     with db() as conn:
         conn.execute('BEGIN IMMEDIATE')
+        if kind == 'receipts':
+            data = receipt_defaults(conn, user, data)
         case_id = data.get('case_id')
         if kind in GLOBAL_KINDS:
             case_id = None
@@ -469,9 +543,16 @@ def create_record(kind: str, data: dict, user=Depends(current_user)):
         item['case_id'] = case_id
         if kind in ('invoices', 'receipts', 'payment_plans'):
             item['currency'] = get_record(conn, case_id, 'cases').get('currency', 'CNY')
+            if kind == 'receipts' and item.get('invoice_id'):
+                item['currency'] = get_record(conn, item['invoice_id'], 'invoices').get('currency') or item['currency']
         validate_refs(conn, kind, item)
+        if plan is not None:
+            allocated = calculate_plan(conn, get_record(conn, case_id, 'cases'), item['amount'], plan)
+            item['allocation_method'] = plan.get('method', 'ratio')
         item.update(status=INITIAL.get(kind, 'active'), applicant_id=user['id'], applicant_name=user['name'], history=[])
         result = save_record(conn, kind, item, user['id'], case_id=case_id)
+        if plan is not None:
+            replace_plan(conn, result, allocated, user['id'])
         audit(conn, user, '创建', kind, result['id'], item.get('title') or item.get('name', ''))
         return result
 
@@ -481,22 +562,33 @@ def edit_record(kind: str, record_id: str, data: dict, user=Depends(current_user
     kind_check(kind)
     if kind in ('allocations', 'conflicts'):
         raise HTTPException(422, '请使用分配方案或审批流程修改')
+    plan = data.get('allocation') if kind == 'invoices' else None
+    if kind == 'invoices' and 'allocation' in data:
+        data = {k: v for k, v in data.items() if k != 'allocation'}
+        if not isinstance(plan, dict):
+            raise HTTPException(422, '发票分配表无效')
     with db() as conn:
         conn.execute('BEGIN IMMEDIATE')
         old = get_record(conn, record_id, kind)
         check_access(conn, user, old, write=True)
         if kind == 'lawyers': old['status'] = References(conn).enrich(dict(old))['status']
+        if kind == 'receipts' and 'invoice_id' in data:
+            data = receipt_defaults(conn, user, data, old)
         if not data.get('version'):
             raise HTTPException(422, '缺少版本号')
         if data.get('case_id') and data['case_id'] != old.get('case_id'):
             raise HTTPException(422, '不能更换所属案件')
-        locked = {'cases': ('submitted', 'our_seal', 'client_seal', 'contract_archive'), 'invoices': ('submitted', 'issued', 'void'), 'receipts': ('confirmed', 'void'),
+        locked = {'cases': ('submitted', 'our_seal', 'client_seal', 'contract_archive'), 'invoices': ('submitted', 'issued', 'collected', 'red_requested', 'red_reversed', 'void'), 'receipts': ('confirmed', 'void'),
                   'seals': ('submitted', 'collected', 'void'), 'contracts': ('archived',)}
         if old.get('status') in locked.get(kind, ()):
             raise HTTPException(409, '当前状态已锁定，请通过审批 / 作废流程处理')
+        if kind == 'invoices':
+            require_role(user, *(['admin', 'finance'] if old['status'] == 'approved' else ['admin', 'partner', 'lawyer', 'finance']))
         if kind == 'cases' and user['role'] == 'lawyer' and data.get('lead_lawyer_id', old.get('lead_lawyer_id')) != old.get('lead_lawyer_id'):
             raise HTTPException(403, '变更主办律师须由合伙人处理')
         item = validate(kind, data, old)
+        if kind == 'receipts' and item.get('invoice_id') and item.get('invoice_id') != old.get('invoice_id'):
+            item['currency'] = get_record(conn, item['invoice_id'], 'invoices').get('currency') or old.get('currency', 'CNY')
         bind_managed_references(conn,kind,item,data)
         def changed(field):
             key = field['key']
@@ -518,7 +610,18 @@ def edit_record(kind: str, record_id: str, data: dict, user=Depends(current_user
             raise HTTPException(409, '已立案主体不能直接变更，请新建关联案件并重新进行利冲审查')
         if kind == 'cases' and old['status'] in ('active', 'closed') and (item.get('contract_document_id') or '') != (old.get('contract_document_id') or ''):
             raise HTTPException(409, '已审批的委托合同附件不能替换')
+        if kind == 'invoices':
+            if plan is None and item['amount'] != old.get('amount'):
+                rows = scope_allocations(conn, old['case_id'], old['id'])
+                if rows:
+                    plan = {'method': old.get('allocation_method', 'ratio'), 'rows': rows}
+            if plan is not None:
+                check_invoice_allocation_write(conn, user, old)
+                allocated = calculate_plan(conn, get_record(conn, old['case_id'], 'cases'), item['amount'], plan)
+                item['allocation_method'] = plan.get('method', 'ratio')
         result = save_record(conn, kind, item, user['id'], record_id=record_id, expected_version=data['version'])
+        if plan is not None:
+            replace_plan(conn, result, allocated, user['id'])
         audit(conn, user, '修改', kind, record_id)
         return result
 
@@ -526,6 +629,8 @@ def edit_record(kind: str, record_id: str, data: dict, user=Depends(current_user
 @app.delete('/api/records/{kind}/{record_id}')
 def delete_record(kind: str, record_id: str, version: int, user=Depends(current_user)):
     kind_check(kind)
+    if kind == 'invoices':
+        require_role(user, 'admin', 'partner', 'lawyer', 'finance')
     with db() as conn:
         conn.execute('BEGIN IMMEDIATE')
         item = get_record(conn, record_id, kind)
@@ -597,24 +702,30 @@ def transition(kind: str, record_id: str, data: dict, user=Depends(current_user)
                 raise HTTPException(409, '当事人已变更，请重新发起利冲检索')
             item['review_note'] = note
         elif kind == 'invoices':
-            if target in ('approved', 'rejected', 'issued', 'void'):
-                require_role(user, 'admin', 'finance')
+            require_role(user, *INVOICE_ACTION_ROLES[target])
             if target == 'issued':
                 if not item.get('number') or not item.get('issued_on'):
                     raise HTTPException(422, '请先登记发票号码和开票日期')
-                if conn.execute("SELECT 1 FROM records WHERE kind='invoices' AND deleted=0 AND id<>? AND json_extract(data,'$.number')=? AND json_extract(data,'$.status')='issued'", (record_id, item['number'])).fetchone():
+                placeholders = ','.join('?' for _ in EFFECTIVE_INVOICE_STATES)
+                status_sql = invoice_status_sql("json_extract(data,'$.status')")
+                if conn.execute("SELECT 1 FROM records WHERE kind='invoices' AND deleted=0 AND id<>? AND json_extract(data,'$.number')=? AND " + status_sql + " IN (" + placeholders + ")", (record_id, item['number'], *EFFECTIVE_INVOICE_STATES)).fetchone():
                     raise HTTPException(409, '此发票号码已经开具')
                 item['allocation_snapshot'] = allocation_snapshot(conn, item)
-            if target == 'void' and conn.execute("SELECT 1 FROM records WHERE kind='receipts' AND deleted=0 AND json_extract(data,'$.invoice_id')=? AND json_extract(data,'$.status')='confirmed'", (record_id,)).fetchone():
+            if target == 'red_reversed' and conn.execute("SELECT 1 FROM records WHERE kind='receipts' AND deleted=0 AND json_extract(data,'$.invoice_id')=? AND " + receipt_status_sql("json_extract(data,'$.status')") + "='confirmed'", (record_id,)).fetchone():
                 raise HTTPException(409, '请先处理该发票已确认的到账记录')
+            if target == 'collected':
+                item['collected_at'] = now()
+                item['collected_by'] = user['id']
+            if target == 'red_reversed':
+                item['red_reversed_at'] = now()
         elif kind == 'receipts':
             require_role(user, 'admin', 'finance')
             if target == 'confirmed':
                 if item.get('invoice_id'):
                     invoice = get_record(conn, item['invoice_id'], 'invoices')
-                    if not invoice or invoice['status'] != 'issued':
+                    if not invoice or invoice['status'] not in EFFECTIVE_INVOICE_STATES:
                         raise HTTPException(409, '关联发票尚未开具')
-                if conn.execute("SELECT 1 FROM records WHERE kind='receipts' AND deleted=0 AND id<>? AND json_extract(data,'$.reference')=? AND json_extract(data,'$.status')='confirmed'", (record_id, item['reference'])).fetchone():
+                if conn.execute("SELECT 1 FROM records WHERE kind='receipts' AND deleted=0 AND id<>? AND json_extract(data,'$.reference')=? AND " + receipt_status_sql("json_extract(data,'$.status')") + "='confirmed'", (record_id, item['reference'])).fetchone():
                     raise HTTPException(409, '该银行流水已确认，不能重复核销')
                 item['allocation_snapshot'] = allocation_snapshot(conn, item)
         elif kind == 'seals':
@@ -675,22 +786,64 @@ def require_document(conn, document_id, case_id):
 
 
 def allocation_snapshot(conn, item):
-    rows = allocations_for(conn, item['case_id'], item['id']) or allocations_for(conn, item['case_id'], item['case_id'])
+    if item['kind'] == 'invoices':
+        return invoice_snapshot(conn, item)
+    rows = allocations_for(conn, item['case_id'], item['id'])
+    if not rows and item['kind'] == 'receipts' and item.get('invoice_id'):
+        from decimal import Decimal
+        invoice = get_record(conn, item['invoice_id'], 'invoices')
+        shares = invoice.get('allocation_snapshot') or scope_allocations(conn, item['case_id'], invoice['id'])
+        if shares:
+            if any(row.get('amount') in (None, '') for row in shares):
+                raise HTTPException(422, '关联发票的分配金额缺失，请先核对')
+            weights = [int(Decimal(money(row['amount'])) * 100) for row in shares]
+            total = sum(weights)
+            if not total or Decimal(total) / 100 != Decimal(money(invoice.get('amount'))):
+                raise HTTPException(422, '关联发票的分配金额与开票金额不符，请先核对')
+            cents = int(Decimal(money(item['amount'])) * 100)
+            amounts = [cents * weight // total for weight in weights]
+            order = sorted(range(len(shares)), key=lambda i: (-(cents * weights[i] % total), shares[i]['lawyer_id']))
+            for i in order[:cents - sum(amounts)]:
+                amounts[i] += 1
+            return [{**row, 'amount': format(Decimal(amounts[i]) / 100, '.2f')} for i, row in enumerate(shares)]
+    rows = rows or allocations_for(conn, item['case_id'], item['case_id'])
     if not rows:
         raise HTTPException(422, '请先设置合计 100% 的律师分配方案')
     return split_amount(item['amount'], [{'lawyer_id': r['lawyer_id'], 'ratio': r['ratio'], 'role': r.get('role', '')} for r in rows])
+
+
+@app.get('/api/cases/{case_id}/invoice-allocations')
+def invoice_allocation_form(case_id: str, invoice_id: str | None = None, user=Depends(current_user)):
+    with db() as conn:
+        conn.execute('BEGIN')
+        case = get_record(conn, case_id, 'cases')
+        check_access(conn, user, case)
+        invoice = get_record(conn, invoice_id, 'invoices') if invoice_id else None
+        if invoice_id and not invoice:
+            raise HTTPException(404, '发票不存在')
+        return allocation_form(conn, user, case, invoice)
 
 
 @app.put('/api/cases/{case_id}/allocations')
 def set_allocations(case_id: str, data: dict, user=Depends(current_user)):
     with db() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        check_access(conn, user, {'kind': 'allocations', 'case_id': case_id}, write=True)
         scope_id = data.get('scope_id', case_id)
         scope = get_record(conn, scope_id)
         if not scope or scope['kind'] not in ('cases', 'invoices', 'receipts') or (scope_id != case_id and scope.get('case_id') != case_id):
             raise HTTPException(422, '分配对象不属于此案件')
-        if scope.get('status') in ('issued', 'confirmed', 'void', 'archived'):
+        if scope['kind'] == 'invoices':
+            check_invoice_allocation_write(conn, user, scope)
+            if data.get('version') != scope['version']:
+                raise HTTPException(409, '分配对象已更新，请刷新')
+            rows = calculate_plan(conn, get_record(conn, case_id, 'cases'), scope['amount'], data)
+            scope['allocation_method'] = data.get('method', 'ratio')
+            replace_plan(conn, scope, rows, user['id'])
+            updated = save_record(conn, 'invoices', scope, user['id'], record_id=scope_id, expected_version=data['version'])
+            audit(conn, user, '设置发票分配', 'invoices', scope_id, encode(rows))
+            return {'items': rows, 'version': updated['version']}
+        check_access(conn, user, {'kind': 'allocations', 'case_id': case_id}, write=True)
+        if scope.get('status') in ('issued', 'collected', 'red_requested', 'red_reversed', 'confirmed', 'void', 'archived'):
             raise HTTPException(409, '已记账的分配快照不可修改')
         if data.get('version') != scope['version']:
             raise HTTPException(409, '分配对象已更新，请刷新')
@@ -851,11 +1004,11 @@ def dashboard(user=Depends(current_user)):
                 stats['unresolved_finance'] += item.get('amount') is None or str(item.get('status','')).startswith('legacy:')
                 currency = item.get('currency') or case_currencies[item['case_id']]
                 by_currency.setdefault(currency, {'contract': Decimal(0), 'received': Decimal(0), 'invoiced': Decimal(0)})
-                if item['kind'] == 'invoices' and item.get('status') == 'issued':
+                if item['kind'] == 'invoices' and item.get('status') in EFFECTIVE_INVOICE_STATES:
                     by_currency[currency]['invoiced'] += Decimal(item.get('amount') or '0')
                 if item['kind'] == 'receipts' and item.get('status') == 'confirmed':
                     by_currency[currency]['received'] += Decimal(item.get('amount') or '0')
-            if item.get('status') in ('submitted', 'pending'):
+            if item.get('status') in ('submitted', 'pending') or (item['kind'] == 'invoices' and item.get('status') == 'red_requested'):
                 pending.append({k: item.get(k) for k in ('id', 'title', 'kind', 'case_id', 'status', 'updated_at')})
             if item['kind'] == 'tasks' and item.get('status') == 'open':
                 tasks.append(item)

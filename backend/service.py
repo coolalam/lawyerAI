@@ -4,7 +4,9 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fastapi import HTTPException
 from .db import encode, get_record, unpack
-from .schema import SCHEMAS, allocation_role_label
+from .schema import SCHEMAS, EFFECTIVE_INVOICE_STATES, allocation_role_label
+from .invoice_states import normalize_invoice
+from .receipt_states import normalize_receipt
 
 
 def money(value, places=2, allow_negative=False):
@@ -112,11 +114,15 @@ def finance_summary(conn, case):
     for row in conn.execute("SELECT kind,data FROM records WHERE case_id=? AND deleted=0 AND kind IN ('invoices','receipts','payment_plans')", (case['id'],)):
         import json
         data = json.loads(row['data'])
+        if row['kind'] == 'invoices':
+            normalize_invoice(data)
+        elif row['kind'] == 'receipts':
+            normalize_receipt(data)
         if data.get('amount') is None or str(data.get('status', '')).startswith('legacy:'):
             unresolved += 1
             continue
         key = {'invoices': 'invoiced', 'receipts': 'received', 'payment_plans': 'planned'}[row['kind']]
-        if (row['kind'] == 'invoices' and data.get('status') != 'issued') or (row['kind'] == 'receipts' and data.get('status') != 'confirmed'):
+        if (row['kind'] == 'invoices' and data.get('status') not in EFFECTIVE_INVOICE_STATES) or (row['kind'] == 'receipts' and data.get('status') != 'confirmed'):
             continue
         unit = data.get('currency') or case.get('currency', 'CNY')
         if unit != case.get('currency', 'CNY'):
